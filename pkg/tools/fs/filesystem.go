@@ -1033,6 +1033,52 @@ func (t *ListDirTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 	return formatDirEntries(entries)
 }
 
+// MakeDirTool creates a directory (and missing parents) under the same
+// sandbox rules as write_file, so creating a folder never needs the exec tool.
+type MakeDirTool struct {
+	fs fileSystem
+}
+
+func NewMakeDirTool(workspace string, restrict bool, allowPaths ...[]*regexp.Regexp) *MakeDirTool {
+	var patterns []*regexp.Regexp
+	if len(allowPaths) > 0 {
+		patterns = allowPaths[0]
+	}
+	return &MakeDirTool{fs: buildFs(workspace, restrict, patterns)}
+}
+
+func (t *MakeDirTool) Name() string {
+	return "make_dir"
+}
+
+func (t *MakeDirTool) Description() string {
+	return "Create a directory, including any missing parent directories"
+}
+
+func (t *MakeDirTool) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "Directory path to create",
+			},
+		},
+		"required": []string{"path"},
+	}
+}
+
+func (t *MakeDirTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+	path, ok := args["path"].(string)
+	if !ok || strings.TrimSpace(path) == "" {
+		return ErrorResult("path is required")
+	}
+	if err := t.fs.MkdirAll(path); err != nil {
+		return ErrorResult(fmt.Sprintf("failed to create directory: %v", err))
+	}
+	return NewToolResult(fmt.Sprintf("Directory created: %s", path))
+}
+
 func formatDirEntries(entries []os.DirEntry) *ToolResult {
 	var result strings.Builder
 	for _, entry := range entries {
@@ -1052,6 +1098,7 @@ type fileSystem interface {
 	WriteFile(path string, data []byte) error
 	ReadDir(path string) ([]os.DirEntry, error)
 	Open(path string) (fs.File, error)
+	MkdirAll(path string) error
 }
 
 // hostFs is an unrestricted fileReadWriter that operates directly on the host filesystem.
@@ -1079,6 +1126,10 @@ func (h *hostFs) WriteFile(path string, data []byte) error {
 	// Use unified atomic write utility with explicit sync for flash storage reliability.
 	// Using 0o600 (owner read/write only) for secure default permissions.
 	return fileutil.WriteFileAtomic(path, data, 0o600)
+}
+
+func (h *hostFs) MkdirAll(path string) error {
+	return os.MkdirAll(path, 0o755)
 }
 
 func (h *hostFs) Open(path string) (fs.File, error) {
@@ -1196,6 +1247,12 @@ func (r *sandboxFs) WriteFile(path string, data []byte) error {
 	})
 }
 
+func (r *sandboxFs) MkdirAll(path string) error {
+	return r.execute(path, func(root *os.Root, relPath string) error {
+		return root.MkdirAll(relPath, 0o755)
+	})
+}
+
 func (r *sandboxFs) ReadDir(path string) ([]os.DirEntry, error) {
 	var entries []os.DirEntry
 	err := r.execute(path, func(root *os.Root, relPath string) error {
@@ -1253,6 +1310,13 @@ func (w *whitelistFs) WriteFile(path string, data []byte) error {
 		return w.host.WriteFile(path, data)
 	}
 	return w.sandbox.WriteFile(path, data)
+}
+
+func (w *whitelistFs) MkdirAll(path string) error {
+	if w.matches(path) {
+		return w.host.MkdirAll(path)
+	}
+	return w.sandbox.MkdirAll(path)
 }
 
 func (w *whitelistFs) ReadDir(path string) ([]os.DirEntry, error) {

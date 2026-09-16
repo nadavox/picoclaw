@@ -148,6 +148,9 @@ func NewAgentInstance(
 		}
 		writeTool.SetAlternativeTools(altTools)
 		toolsRegistry.Register(writeTool)
+		// ponytail: make_dir rides on write_file's toggle; give it its own
+		// config key if someone needs writes without directory creation.
+		toolsRegistry.Register(tools.NewMakeDirTool(workspace, restrict, allowWritePaths))
 	}
 	if cfg.Tools.IsToolEnabled("list_dir") {
 		toolsRegistry.Register(tools.NewListDirTool(workspace, readRestrict, allowReadPaths))
